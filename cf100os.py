@@ -1,20 +1,20 @@
 import argparse
+
 import torch
+
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
 import torch.optim as optim
 import torchvision
 import torchvision.transforms as transforms
+import matplotlib.pyplot as plt
 import numpy as np
-import res
+import random
 import time
-from torchvision.models import resnet50
-import jisu_util as utils
-from FeatSplit_layer import featSplit, OnlySplit, shuffleSplit, shuffleSplit_global
+import jisu_util
+from FeatSplit_layer import featSplit, OnlySplit, OnlySplit_global, shuffleSplit, shuffleSplit_global
 from dropdepthout import DropDepthOut
-
-num_clusters = 8
 
 parser = argparse.ArgumentParser(description='CIFAR100 training', add_help=False)
 parser.add_argument('--datadir', default='/home/david/FeatureSplit/data/')
@@ -25,48 +25,15 @@ parser.add_argument('--weight-decay', '--wd', default=1e-4, type=float)
 parser.add_argument('--momentum', default=0.9, type=float)
 parser.add_argument('--print-freq', '-p', default=10, type=int)
 parser.add_argument('--resume', default='', type=str, metavar='PATH')
-parser.add_argument('--numcluster', '-nc', default=2, type=int)
+parser.add_argument('--numcluster', '-nc', default=8, type=int)
+parser.add_argument('--global_num', '-gc', default=2, type=int)
 parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true', help='evaluate model on validation set')
-# cfg = [['C', 40], ['C', 80], ['M'], ['C', 80], ['C', 160], ['M'], ['C', 160], ['C', 320], ['M'], ['D', 640], ['M']]
-# cfg = [['C', 40], ['F', 80, num_clusters], ['M'], ['F', 80, num_clusters], ['F', 160, num_clusters]
-#     , ['M'], ['F', 160, num_clusters], ['F', 320, num_clusters], ['M'], ['F', 640, num_clusters], ['M']]
-#cfg = [['C', 40], ['O', 80, num_clusters], ['M'], ['O', 80, num_clusters], ['O', 160, num_clusters]
-#    , ['M'], ['O', 160, num_clusters], ['O', 320, num_clusters], ['M'], ['O', 640, num_clusters], ['M']]
-cfg = [['C', 40], ['S', 80, num_clusters], ['M'], ['S', 80, num_clusters], ['S', 160, num_clusters]
-    , ['M'], ['S', 160, num_clusters], ['S', 320, num_clusters], ['M'], ['S', 640, num_clusters], ['M']]
-# cfg = [['C', 40], ['D', 80], ['M'], ['D', 80], ['D', 160]
-#     , ['M'], ['D', 160], ['D', 320], ['M'], ['D', 640], ['M']]
-# cfg = [32, 64, 128, 'M', 256, 256, 512, 'M']
-
-class AverageMeter(object):
-    """Computes and stores the average and current value"""
-    def __init__(self):
-        self.reset()
-
-    def reset(self):
-        self.val = 0.0
-        self.avg = 0.0
-        self.sum = 0.0
-        self.count = 0
-
-    def update(self, val, n=1):
-        self.val = val
-        self.sum += val * n
-        self.count += n
-        self.avg = float(self.sum) / self.count
-
-class resnet(nn.Module):
-    def __init__(self):
-        super(resnet, self).__init__()
-
-    def forward(self, x):
-        return x
 
 class CNN(nn.Module):
     def __init__(self, cfg, arg):
         super(CNN, self).__init__()
         self.features = self.make_layers(cfg, arg, batch_norm=True)
-        self.classifier = nn.Sequential(nn.Linear(6 * 6 * 640, 2048), nn.Linear(2048, 256), nn.Linear(256, 10))
+        self.classifier = nn.Sequential(nn.Linear(8 * 8 * 320, 2048), nn.Linear(2048, 256), nn.Linear(256, 100))
 
     def forward(self, x):
         x = self.features(x)
@@ -74,12 +41,15 @@ class CNN(nn.Module):
         x = self.classifier(x)
         return F.log_softmax(x)
 
-    def make_layers(self, cfg, arg, batch_norm=True):
+    def make_layers(self, cfg, arg, batch_norm=False):
         layers = []
         in_channels = 3
         for v in cfg:
-            if v[0] == 'M':
+            if v[0] == 'ImageSize':
+                imagesize = v[1]
+            elif v[0] == 'M':
                 layers += [nn.MaxPool2d(kernel_size=2, stride=2)]
+                imagesize /= 2
             elif v[0] == 'F':
                 featSL_layer = featSplit(in_channels, v)
                 if batch_norm:
@@ -101,13 +71,6 @@ class CNN(nn.Module):
                 else:
                     layers += [conv2d, nn.ReLU(inplace=True)]
                 in_channels = v[1]
-            elif v[0] == 'S':
-                shuffle_split = shuffleSplit(in_channels, v, arg.batchsize,32)
-                if batch_norm:
-                    layers += [shuffle_split, nn.BatchNorm2d(v[1]), nn.ReLU(inplace=True)]
-                else:
-                    layers += [shuffle_split, nn.ReLU(inplace=True)]
-                in_channels = v[1]
             elif v[0] == 'O':
                 splitOnly = OnlySplit(in_channels, v)
                 if batch_norm:
@@ -115,8 +78,22 @@ class CNN(nn.Module):
                 else:
                     layers += [splitOnly, nn.ReLU(inplace=True)]
                 in_channels = v[1]
+            elif v[0] == 'S':
+                shuffle_split = shuffleSplit(in_channels, v, arg.batchsize, imagesize)
+                if batch_norm:
+                    layers += [shuffle_split, nn.BatchNorm2d(v[1]), nn.ReLU(inplace=True)]
+                else:
+                    layers += [shuffle_split, nn.ReLU(inplace=True)]
+                in_channels = v[1]
+            elif v[0] == 'OG':
+                splitonly_global = OnlySplit_global(in_channels, v, arg.batchsize,32)
+                if batch_norm:
+                    layers += [splitonly_global, nn.BatchNorm2d(v[1]), nn.ReLU(inplace=True)]
+                else:
+                    layers += [splitonly_global, nn.ReLU(inplace=True)]
+                in_channels = v[1]
             elif v[0] == 'SG':
-                shuffle_split_global = shuffleSplit_global(in_channels, v, arg.batchsize)
+                shuffle_split_global = shuffleSplit_global(in_channels, v, arg.batchsize, imagesize)
                 if batch_norm:
                     layers += [shuffle_split_global, nn.BatchNorm2d(v[1]), nn.ReLU(inplace=True)]
                 else:
@@ -124,12 +101,11 @@ class CNN(nn.Module):
                 in_channels = v[1]
         return nn.Sequential(*layers)
 
-
 def train(model, trainloader, testloader, optimizer, epoch):
-    batch_time = AverageMeter()
-    data_time = AverageMeter()
-    losses = AverageMeter()
-    acc = AverageMeter()
+    batch_time = jisu_util.AverageMeter()
+    data_time = jisu_util.AverageMeter()
+    losses = jisu_util.AverageMeter()
+    acc = jisu_util.AverageMeter()
 
 
     model.train()
@@ -144,9 +120,10 @@ def train(model, trainloader, testloader, optimizer, epoch):
         # Compute output
         out = model(input)
         loss = F.nll_loss(out, label)
+        # print loss
 
         # Update results
-        accuracy = utils.accuracy(out, label)
+        accuracy = jisu_util.accuracy(out, label)
         acc.update(accuracy, input.size(0))
         losses.update(loss.data[0])
 
@@ -169,9 +146,9 @@ def train(model, trainloader, testloader, optimizer, epoch):
                     data_time=data_time, loss=losses, acc=acc))
 
 def validate(testloader, model):
-    batch_time = AverageMeter()
-    losses = AverageMeter()
-    acc = AverageMeter()
+    batch_time = jisu_util.AverageMeter()
+    losses = jisu_util.AverageMeter()
+    acc = jisu_util.AverageMeter()
 
     end = time.time()
     model.eval()
@@ -184,7 +161,7 @@ def validate(testloader, model):
         loss = F.nll_loss(output, label)
 
         # measure accuracy and record loss
-        accuracy = utils.accuracy(output, label)
+        accuracy = jisu_util.accuracy(output, label)
         losses.update(loss.data[0], input.size(0))
         acc.update(accuracy, input.size(0))
 
@@ -208,26 +185,29 @@ def validate(testloader, model):
 
 def main():
     args = parser.parse_args()
-    transform = transforms.Compose([transforms.ToTensor()])
-    trainset = torchvision.datasets.STL10(root='/home/david/FeatureSplit/data', split='train', transform=transform, download=True)
-    trainloader = torch.utils.data.DataLoader(trainset, batch_size=8, shuffle=True, num_workers=2)
-    testset = torchvision.datasets.STL10(root='/home/david/FeatureSplit/data', split='test', transform=transform, download=True)
-    testloader = torch.utils.data.DataLoader(testset, batch_size=8, shuffle=True, num_workers=2)
 
-    # transform = transforms.Compose([transforms.ToTensor()])
-    #                                 # , transforms.Scale((96, 96))])
-    # trainset = torchvision.datasets.CIFAR10(root='/home/jisu/Desktop/Data', train=True, transform=transform,
-    #                                       download=True)
-    # trainloader = torch.utils.data.DataLoader(trainset, batch_size=32, shuffle=True, num_workers=2)
-    # testset = torchvision.datasets.CIFAR10(root='/home/jisu/Desktop/Data', train=False, transform=transform,
-    #                                      download=True)
-    # testloader = torch.utils.data.DataLoader(testset, batch_size=32, shuffle=True, num_workers=2)
+    #cfg = [['C', 40], ['C', 80], ['M'], ['C', 80], ['C', 160], ['M'], ['C', 160], ['C', 320], ['M'], ['C', 640], ['M']]
+    # cfg = [['C', 40], ['F', 80, num_clusters], ['M'], ['F', 80, num_clusters], ['F', 160, num_clusters]
+    #     , ['M'], ['F', 160, num_clusters], ['F', 320, num_clusters], ['M'], ['F', 640, num_clusters], ['M']]
+    #cfg = [['ImageSize', 32], ['C', 40], ['C', 80, args.numcluster], ['M'], ['C', 80, args.numcluster], ['C', 160, args.numcluster]
+    #     , ['C', 160, args.numcluster], ['C', 320, args.numcluster], ['M']]
+    cfg = [['ImageSize', 32], ['C', 40], ['O', 80, args.numcluster], ['M'], ['O', 80, args.numcluster], ['O', 160, args.numcluster]
+         , ['O', 160, args.numcluster], ['O', 320, args.numcluster], ['M']]
+    # cfg = [['ImageSize', 32], ['C', 40], ['S', 80, args.numcluster], ['M'], ['S', 80, args.numcluster], ['S', 160, args.numcluster]
+    #     , ['S', 160, args.numcluster], ['S', 320, args.numcluster], ['M']]
+    #cfg = [['ImageSize', 32], ['C', 40], ['SG', 80, 2, args.numcluster], ['M'], ['SG', 80, 2, args.numcluster], ['SG', 160, 2, args.numcluster]
+    #    , ['SG', 160, 2, args.numcluster], ['SG', 320, 2, args.numcluster], ['M']]
+    # cfg = [['C', 40], ['D', 80], ['M'], ['D', 80], ['D', 160]
+    #     , ['M'], ['D', 160], ['D', 320], ['M'], ['D', 640], ['M']]
+    # cfg = [32, 64, 128, 'M', 256, 256, 512, 'M']
 
-    # cfg = {'num_classes':10}
-    # model = res.resnet50(pretrained=False, **cfg)
+    trainset = torchvision.datasets.CIFAR100('/home/david/FeatureSplit/data/', train=True, download=True, transform=transforms.ToTensor())
+    trainloader = torch.utils.data.DataLoader(trainset, batch_size=args.batchsize, shuffle=True, num_workers=2)
+    testset = torchvision.datasets.CIFAR100('/home/david/FeatureSplit/data/', train=False, download=True, transform=transforms.ToTensor())
+    testloader = torch.utils.data.DataLoader(testset, batch_size=args.batchsize, shuffle=True, num_workers=2)
 
-    model = CNN(cfg,args).cuda()
-    print model
+    model = CNN(cfg, args).cuda()
+    # print model
 
     optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=0.0001)
     best_acc = 0
@@ -238,13 +218,15 @@ def main():
 
         is_best = valid_acc > best_acc
         best_acc = max(valid_acc, best_acc)
-        utils.save_checkpoint({
+        jisu_util.save_checkpoint({
             'epoch': epoch + 1,
             'arch': 'CNN',
             'state_dict': model.state_dict(),
             'best_acc': best_acc,
-            }, is_best)
+        }, is_best)
         print(' * Best Accuracy {acc:.3f}'
               .format(acc=best_acc))
+
+
 if __name__ == '__main__':
     main()

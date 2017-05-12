@@ -11,7 +11,7 @@ import res
 import time
 from torchvision.models import resnet50
 import jisu_util as utils
-from FeatSplit_layer import featSplit, OnlySplit, shuffleSplit, shuffleSplit_global
+from FeatSplit_layer import featSplit, OnlySplit, OnlySplit_global, shuffleSplit, shuffleSplit_global
 from dropdepthout import DropDepthOut
 
 num_clusters = 8
@@ -26,14 +26,16 @@ parser.add_argument('--momentum', default=0.9, type=float)
 parser.add_argument('--print-freq', '-p', default=10, type=int)
 parser.add_argument('--resume', default='', type=str, metavar='PATH')
 parser.add_argument('--numcluster', '-nc', default=2, type=int)
+parser.add_argument('--global_num', '-ng', default=2, type=int)
 parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true', help='evaluate model on validation set')
 # cfg = [['C', 40], ['C', 80], ['M'], ['C', 80], ['C', 160], ['M'], ['C', 160], ['C', 320], ['M'], ['D', 640], ['M']]
 # cfg = [['C', 40], ['F', 80, num_clusters], ['M'], ['F', 80, num_clusters], ['F', 160, num_clusters]
 #     , ['M'], ['F', 160, num_clusters], ['F', 320, num_clusters], ['M'], ['F', 640, num_clusters], ['M']]
 #cfg = [['C', 40], ['O', 80, num_clusters], ['M'], ['O', 80, num_clusters], ['O', 160, num_clusters]
 #    , ['M'], ['O', 160, num_clusters], ['O', 320, num_clusters], ['M'], ['O', 640, num_clusters], ['M']]
-cfg = [['C', 40], ['S', 80, num_clusters], ['M'], ['S', 80, num_clusters], ['S', 160, num_clusters]
-    , ['M'], ['S', 160, num_clusters], ['S', 320, num_clusters], ['M'], ['S', 640, num_clusters], ['M']]
+#cfg = [['C', 40], ['S', 80, num_clusters], ['M'], ['S', 80, num_clusters], ['S', 160, num_clusters]
+#    , ['M'], ['S', 160, num_clusters], ['S', 320, num_clusters], ['M'], ['S', 640, num_clusters], ['M']]
+
 # cfg = [['C', 40], ['D', 80], ['M'], ['D', 80], ['D', 160]
 #     , ['M'], ['D', 160], ['D', 320], ['M'], ['D', 640], ['M']]
 # cfg = [32, 64, 128, 'M', 256, 256, 512, 'M']
@@ -115,8 +117,15 @@ class CNN(nn.Module):
                 else:
                     layers += [splitOnly, nn.ReLU(inplace=True)]
                 in_channels = v[1]
+            elif v[0] == 'OG':
+                splitonly_global = OnlySplit_global(in_channels, v, arg.batchsize,32)
+                if batch_norm:
+                    layers += [splitonly_global, nn.BatchNorm2d(v[1]), nn.ReLU(inplace=True)]
+                else:
+                    layers += [splitonly_global, nn.ReLU(inplace=True)]
+                in_channels = v[1]
             elif v[0] == 'SG':
-                shuffle_split_global = shuffleSplit_global(in_channels, v, arg.batchsize)
+                shuffle_split_global = shuffleSplit_global(in_channels, v, arg.batchsize,32)
                 if batch_norm:
                     layers += [shuffle_split_global, nn.BatchNorm2d(v[1]), nn.ReLU(inplace=True)]
                 else:
@@ -213,7 +222,10 @@ def main():
     trainloader = torch.utils.data.DataLoader(trainset, batch_size=8, shuffle=True, num_workers=2)
     testset = torchvision.datasets.STL10(root='/home/david/FeatureSplit/data', split='test', transform=transform, download=True)
     testloader = torch.utils.data.DataLoader(testset, batch_size=8, shuffle=True, num_workers=2)
-
+    cfg = [['C', 40], ['OG', 80, args.global_num, args.numcluster], ['M'], ['OG', 80,args.global_num, args.numcluster], ['OG', 160,args.global_num, args.numcluster]
+        , ['M'], ['OG', 160,args.global_num, args.numcluster], ['OG', 320,args.global_num, args.numcluster], ['M'], ['OG', 640,args.global_num, args.numcluster], ['M']]
+    #cfg = [['C', 40], ['SG', 80, args.global_num, args.numcluster], ['M'], ['SG', 80,args.global_num, args.numcluster], ['SG', 160,args.global_num, args.numcluster]
+    #    , ['M'], ['SG', 160,args.global_num, args.numcluster], ['SG', 320,args.global_num, args.numcluster], ['M'], ['SG', 640,args.global_num, args.numcluster], ['M']]
     # transform = transforms.Compose([transforms.ToTensor()])
     #                                 # , transforms.Scale((96, 96))])
     # trainset = torchvision.datasets.CIFAR10(root='/home/jisu/Desktop/Data', train=True, transform=transform,
@@ -222,7 +234,8 @@ def main():
     # testset = torchvision.datasets.CIFAR10(root='/home/jisu/Desktop/Data', train=False, transform=transform,
     #                                      download=True)
     # testloader = torch.utils.data.DataLoader(testset, batch_size=32, shuffle=True, num_workers=2)
-
+    #cfg = [['C', 40], ['S', 80, args.numcluster], ['M'], ['S', 80, args.numcluster], ['S', 160, args.numcluster]
+    #   , ['M'], ['S', 160, args.numcluster], ['S', 320, args.numcluster], ['M'], ['S', 640, args.numcluster], ['M']]
     # cfg = {'num_classes':10}
     # model = res.resnet50(pretrained=False, **cfg)
 
